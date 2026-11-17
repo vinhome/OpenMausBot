@@ -335,7 +335,7 @@ export function spawnBridgeChild(
   env: NodeJS.ProcessEnv,
   windowsHide: boolean,
 ): ChildProcessWithoutNullStreams {
-  const proc = spawn(command, args, { shell: false, windowsHide, env, stdio: ["pipe", "pipe", "pipe"] });
+  const proc = spawn(command, args, { shell: false, windowsHide: process.platform === "win32" ? true : windowsHide, env, stdio: ["pipe", "pipe", "pipe"] });
   // docker may exit before it drains stdin; pipe() leaves this error unhandled.
   proc.stdin.on("error", () => {});
   proc.stderr.pipe(process.stderr, { end: false });
