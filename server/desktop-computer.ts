@@ -5,7 +5,8 @@ import { userErrorThrown } from "./user-errors.ts";
 // it, so a second OpenMausBot server on the same computer (a copy run from source, a demo, a test) never finds this
 // computer, even with the app's own record of its driver in reach. A Mac shared with My Cloud goes through lending, not here.
 import { THIS_COMPUTER_NOT_READY } from "../shared/your-computer.ts";
-import { cuaUnavailableReason, decodeCuaConnection, type LocalComputerConnection } from "./local-computer.ts";
+import { cuaUnavailableReason, decodeCuaConnection, type LocalComputerConnection, readCuaConnection } from "./local-computer.ts";
+import { join } from "node:path";
 
 export const DESKTOP_COMPUTER_GRANT = "openmausbot:local-computer";
 
@@ -27,6 +28,12 @@ export function createDesktopComputer({
 } = {}): DesktopComputer {
   let record: unknown = null;
   let heard = false;
+
+  const fallbackConnection = (): LocalComputerConnection | null => {
+    const userData = process.env.OMB_USER_DATA || (process.platform === "win32" && process.env.APPDATA ? join(process.env.APPDATA, "openmausbot") : undefined);
+    return readCuaConnection({ platform, userData });
+  };
+
   return {
     receive(message) {
       if (!message || typeof message !== "object" || Array.isArray(message)) return false;
@@ -41,9 +48,9 @@ export function createDesktopComputer({
       return true;
     },
     // Decoded on every use: a Linux driver is checked again (same binary, live processes) each time, as the file was.
-    connection: () => (record ? decode(record, { platform }) : null),
-    granted: () => heard,
-    unavailableReason: () => (record ? cuaUnavailableReason(record, platform) : null),
+    connection: () => (record ? decode(record, { platform }) : fallbackConnection()),
+    granted: () => heard || Boolean(fallbackConnection()),
+    unavailableReason: () => (record ? cuaUnavailableReason(record, platform) : (fallbackConnection() ? null : "driver-not-found")),
   };
 }
 
