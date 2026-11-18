@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent } from "../contracts.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
+import { RETRY_MAX_ATTEMPTS } from "./retry.ts";
 
 // The backoff between attempts is covered by retry.ts itself; here it would only slow the suite.
 vi.mock("./retry.ts", async (importOriginal) => {
@@ -57,13 +58,13 @@ describe("createOpenAIChatRuntime stream truncation retry", () => {
     expect(requests).toBe(2);
   });
 
-  it("gives up after three truncated attempts and reports the last error", async () => {
+  it("gives up after reaching max attempts and reports the last error", async () => {
     const { events, requests } = await runTurn([truncated]);
     expect(events.filter((event) => event.type === "turn.retrying").map((event) => event.type === "turn.retrying" && event.attempt))
-      .toEqual([1, 2]);
+      .toEqual(Array.from({ length: RETRY_MAX_ATTEMPTS - 1 }, (_, i) => i + 1));
     expect(events.find((event) => event.type === "runtime.error")).toMatchObject({ message: "Stream ended before completion" });
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "error" });
-    expect(requests).toBe(3);
+    expect(requests).toBe(RETRY_MAX_ATTEMPTS);
   });
 
   it("does not resend once answer text streamed, even with a clean retry available", async () => {

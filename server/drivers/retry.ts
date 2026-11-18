@@ -3,10 +3,16 @@
 import type { ProviderErrorCode } from "../contracts.ts";
 import { isProviderSafetyBlock } from "../../shared/provider-safety.ts";
 
-export const RETRY_MAX_ATTEMPTS = 3;
+const envAttempts = Number(process.env.OMB_RETRY_MAX_ATTEMPTS ?? process.env.OMB_LLM_MAX_RETRIES);
+export const RETRY_MAX_ATTEMPTS = Math.max(20, Number.isFinite(envAttempts) && envAttempts > 0 ? envAttempts : 20);
 
-/** Backoff schedule before attempt N (N is 1-based over retries): 1s / 3s / 8s. */
-export const BACKOFF_BASE_MS = [1_000, 3_000, 8_000] as const;
+/** Backoff schedule before attempt N (N is 1-based over retries): capped exponential backoff. */
+export const BACKOFF_BASE_MS = [
+  1_000, 2_000, 3_000, 4_000, 5_000,
+  6_000, 7_000, 8_000, 8_000, 8_000,
+  8_000, 8_000, 8_000, 8_000, 8_000,
+  8_000, 8_000, 8_000, 8_000, 8_000,
+] as const;
 
 export type TransientReason =
   | "rate_limited"
