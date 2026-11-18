@@ -1,10 +1,12 @@
 // File tools a chat bot gets on this desktop's own computer. The app adds no rules of its own about which paths: the OS
 // account decides what can be opened, and the person's approval level (the bridge's gate) decides what is asked.
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { ToolCall } from "./mcp-bridge.ts";
+import { augmentedPath } from "./env-path.ts";
 
 /** Size caps only so one call cannot stall a turn. */
 export const HOST_FILE_READ_LIMIT = 10 * 1024 * 1024;
@@ -44,6 +46,20 @@ export const HOST_FILE_TOOLS = [
     name: "make_folder",
     description: "Make a folder, and any missing folders above it, on this computer.",
     inputSchema: { type: "object", properties: { path: { type: "string", description: "Full path of the folder." } }, required: ["path"], additionalProperties: false },
+  },
+  {
+    name: "exec",
+    description: "Run a shell command on this computer and wait for its result. Always prefer this over opening GUI apps or desktop windows for running PowerShell, cmd.exe, scripts, system queries, memory/disk checks, and CLI tools. Completely hidden in the background without stealing focus or opening windows.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The command to run (PowerShell on Windows, bash on macOS/Linux)." },
+        cwd: { type: "string", description: "Full path of working folder." },
+        timeout_seconds: { type: "integer", description: "Maximum execution time in seconds (default 60, max 300)." },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
   },
 ] as const;
 
@@ -174,7 +190,68 @@ async function makeFolder(home: string, args: Record<string, unknown>): Promise<
   return said(existing ? `${target} is already there.` : `Made the folder ${target}.`);
 }
 
-const RUN = { list_files: listFiles, read_file: readFile, write_file: writeFile, make_folder: makeFolder } as const;
+async function execCommand(home: string, args: Record<string, unknown>): Promise<Result> {
+  const rawCommand = args.command;
+  if (typeof rawCommand !== "string" || !rawCommand.trim()) throw new Mistake("Provide a command to run.");
+  const timeoutSec = typeof args.timeout_seconds === "number" && args.timeout_seconds > 0 ? Math.min(args.timeout_seconds, 300) : 60;
+  const cwd = typeof args.cwd === "string" && args.cwd.trim() ? fullPath(home, args.cwd) : home;
+
+  return new Promise((resolve) => {
+    const isWin = process.platform === "win32";
+    const shell = isWin ? "powershell.exe" : "/bin/bash";
+    const shellArgs = isWin
+      ? ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", rawCommand]
+      : ["-c", rawCommand];
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(shell, shellArgs, {
+        cwd,
+        windowsHide: true,
+        env: { ...process.env, PATH: augmentedPath() },
+      });
+    } catch (err: unknown) {
+      resolve(refused(`Failed to start command: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    const MAX_OUT = 512 * 1024;
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < MAX_OUT) stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_OUT) stderr += chunk.toString("utf8");
+    });
+
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      resolve(refused(`Command timed out after ${timeoutSec}s.\n${stdout}\n${stderr}`.trim()));
+    }, timeoutSec * 1000);
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve(refused(`Failed to start command: ${err.message}`));
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      let text = "";
+      if (stdout.trim()) text += stdout.trim();
+      if (stderr.trim()) text += (text ? "\n[stderr]\n" : "") + stderr.trim();
+      if (!text) text = `(Command finished with exit code ${code ?? 0} and no output)`;
+      if (code !== 0 && code !== null) {
+        resolve({ content: [{ type: "text", text: `[exit code: ${code}]\n${text}` }], isError: true });
+      } else {
+        resolve(said(text));
+      }
+    });
+  });
+}
+
+const RUN = { list_files: listFiles, read_file: readFile, write_file: writeFile, make_folder: makeFolder, exec: execCommand } as const;
 
 /** The bridge's relay for these tools: null for any other call. Failures come back as the OS worded them. */
 export function hostFileRelay(home: string): (call: ToolCall) => Promise<Result> | null {
